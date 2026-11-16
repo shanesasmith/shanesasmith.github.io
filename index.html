@@ -54,7 +54,7 @@ body {
   -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent;
   -webkit-text-size-adjust: 100%;
-  touch-action: manipulation;
+  touch-action: none;
   overscroll-behavior: none;
 }
 #app {
@@ -832,6 +832,23 @@ if (typeof module !== 'undefined') module.exports = Engine;
       if (t - t0 < 2600) requestAnimationFrame(frame); else { ctx.clearRect(0, 0, cv.width, cv.height); cv.hidden = true; }
     })(t0);
   }
+
+  /* ---------------- zoom guard ---------------- */
+  // Safari ignores user-scalable=no unless the page runs from the Home Screen, so block
+  // pinch and double-tap zoom here. While the page is already zoomed the pinch is let
+  // through, so there is always a way back to 1x.
+  const zoomed = () => !!(window.visualViewport && window.visualViewport.scale > 1.01);
+  for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
+    document.addEventListener(type, e => { if (!zoomed()) e.preventDefault(); }, { passive: false });
+  }
+  document.addEventListener('touchmove', e => { if (e.touches.length > 1 && !zoomed()) e.preventDefault(); }, { passive: false });
+  let lastTouchEnd = 0;
+  document.addEventListener('touchend', e => {
+    const now = Date.now();
+    if (now - lastTouchEnd < 350 && !zoomed() && !e.target.closest('button')) e.preventDefault();
+    lastTouchEnd = now;
+  }, { passive: false });
+  document.addEventListener('dblclick', e => e.preventDefault());
 
   /* ---------------- wiring and boot ---------------- */
   btnUndo.addEventListener('click', undo);
