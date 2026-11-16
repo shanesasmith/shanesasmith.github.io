@@ -6,10 +6,10 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Solitaire">
+<meta name="apple-mobile-web-app-title" content="Grace's Solitaire">
 <meta name="theme-color" content="#2f6a57">
 <meta name="claude:viewport-fit-sides" content="cover">
-<title>Klondike Solitaire</title>
+<title>Grace's Solitaire</title>
 <style>
 /* Layout: one fixed screen (status strip, card table, toolbar). The page never scrolls. */
 :root {
@@ -85,6 +85,13 @@ body {
 
 /* ---- table ---- */
 #board { position: relative; flex: 1 1 auto; min-height: 0; touch-action: none; }
+#board::before {
+  content: "Grace's Solitaire";
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font: italic 700 clamp(30px, 11vw, 72px)/1 "Snell Roundhand", "Savoye LET", "Apple Chancery", "Brush Script MT", Georgia, serif;
+  color: rgba(255,255,255,.10); transform: rotate(-16deg); pointer-events: none; white-space: nowrap;
+  text-shadow: 0 1px 0 rgba(0,0,0,.08);
+}
 .pile {
   position: absolute; left: 0; top: 0;
   width: var(--cw); height: var(--ch);
@@ -108,6 +115,7 @@ body {
   font-family: var(--font-card);
 }
 .card.nomove, .card.dragging { transition: none; }
+.card.flying { transition-duration: .32s; }
 .card.dragging .face, .card.dragging .back { box-shadow: 0 10px 22px rgba(0,0,0,.35); }
 .card .face, .card .back { position: absolute; inset: 0; border-radius: inherit; box-shadow: 0 1px 2px rgba(0,0,0,.28); }
 .card .face { background: var(--card); border: 1px solid var(--card-edge); color: var(--black); display: none; }
@@ -250,11 +258,34 @@ const Engine = (() => {
     return null;
   }
 
-  // Foundations build up by suit from the Ace.
+  // A foundation slot holds either a suit pile built up from the Ace, or a whole
+  // King-to-Ace run that cleared off the table (stored Ace first, King on top).
+  const isRunPile = pile => pile.length === 13 && pile[0].r === 1 && pile[1] && pile[1].s !== pile[0].s;
+
   function canDropFoundation(card, pile) {
     if (!pile.length) return card.r === 1;
+    if (isRunPile(pile)) return false;
     const top = pile[pile.length - 1];
     return top.s === card.s && top.r === card.r - 1;
+  }
+
+  // Lift a finished King-to-Ace alternating run off column i into an empty slot.
+  // Returns the slot index, or -1 when there is no run or no free slot.
+  function collectRun(st, i) {
+    const col = st.tableau[i];
+    if (col.length < 13) return -1;
+    const top13 = col.slice(-13);
+    if (top13[0].r !== 13) return -1;
+    for (let k = 0; k < 13; k++) {
+      if (!top13[k].up) return -1;
+      if (k > 0 && !(top13[k - 1].r === top13[k].r + 1 && isRed(top13[k - 1]) !== isRed(top13[k]))) return -1;
+    }
+    const slot = st.foundations.findIndex(p => !p.length);
+    if (slot < 0) return -1;
+    st.foundations[slot] = col.splice(-13).reverse();
+    st.score += 100;
+    if (col.length && !col[col.length - 1].up) col[col.length - 1].up = true;
+    return slot;
   }
 
   // Tableau builds down in alternating colors; only a King may start an empty column.
@@ -269,6 +300,7 @@ const Engine = (() => {
   function runFrom(st, from) {
     const src = getPile(st, from);
     if (!src || !src.length || from.type === 'stock') return null;
+    if (from.type === 'foundation' && isRunPile(src)) return null;   // cleared runs stay put
     const idx = from.type === 'tableau' ? from.idx : src.length - 1;
     if (!Number.isInteger(idx) || idx < 0 || idx >= src.length) return null;
     const run = src.slice(idx);
@@ -303,7 +335,8 @@ const Engine = (() => {
     if (from.type === 'tableau' && src.length && !src[src.length - 1].up) { src[src.length - 1].up = true; delta += 5; }
     st.score = Math.max(0, st.score + delta);
     st.moves++;
-    return true;
+    const cleared = to.type === 'tableau' ? collectRun(st, to.i) : -1;
+    return { cleared };
   }
 
   // Turn cards from the stock onto the waste. When the stock is empty the waste is
@@ -352,7 +385,7 @@ const Engine = (() => {
     return emptyTarget;
   }
 
-  function isWon(st) { return st.foundations.every(f => f.length === 13); }
+  function isWon(st) { return st.foundations.reduce((n, f) => n + f.length, 0) === 52; }
   function allTableauUp(st) { return st.tableau.every(col => col.every(c => c.up)); }
 
   // With no hidden cards and nothing left in stock or waste the game is always
@@ -401,7 +434,9 @@ const Engine = (() => {
       if (st.stock.some(c => c.up)) return 'stock card face up';
       if (st.waste.some(c => !c.up)) return 'waste card face down';
       for (const f of st.foundations) for (let i = 0; i < f.length; i++) {
-        if (f[i].r !== i + 1 || !f[i].up || f[i].s !== f[0].s) return 'foundation order';
+        if (f[i].r !== i + 1 || !f[i].up) return 'foundation order';
+        if (isRunPile(f)) { if (i > 0 && isRed(f[i]) === isRed(f[i - 1])) return 'run colours'; }
+        else if (f[i].s !== f[0].s) return 'foundation suit';
       }
       for (const col of st.tableau) {
         let seenUp = false;
@@ -417,7 +452,7 @@ const Engine = (() => {
     } catch (e) { return 'malformed'; }
   }
 
-  return { SUITS, isRed, newGame, canMove, applyMove, draw, findAutoTarget, isWon, canAutoComplete, autoStep, locate, clone, validate, getPile, runFrom, canDropFoundation, canDropTableau };
+  return { SUITS, isRed, newGame, canMove, applyMove, draw, findAutoTarget, isWon, canAutoComplete, autoStep, locate, clone, validate, getPile, runFrom, canDropFoundation, canDropTableau, collectRun, isRunPile };
 })();
 /*ENGINE-END*/
 if (typeof module !== 'undefined') module.exports = Engine;
@@ -552,10 +587,13 @@ if (typeof module !== 'undefined') module.exports = Engine;
 
   // Keep cards flying to a new pile above everything else until their transition ends.
   let liftTimer = null;
-  function liftDuringMove(ids) {
-    ids.forEach((id, k) => { const el = cardEls.get(id); if (el) el.style.zIndex = 1500 + k; });
+  function liftDuringMove(ids, long) {
+    ids.forEach((id, k) => { const el = cardEls.get(id); if (el) { el.style.zIndex = 1500 + k; if (long) el.classList.add('flying'); } });
     clearTimeout(liftTimer);
-    liftTimer = setTimeout(() => { if (!drag) render(); }, reduced ? 0 : 220);
+    liftTimer = setTimeout(() => {
+      board.querySelectorAll('.card.flying').forEach(el => el.classList.remove('flying'));
+      if (!drag) render();
+    }, reduced ? 0 : (long ? 360 : 220));
   }
 
   function nudge(ids) {
@@ -632,10 +670,13 @@ if (typeof module !== 'undefined') module.exports = Engine;
   function doMove(from, to) {
     const run = Engine.runFrom(state, from);
     pushUndo();
-    if (!Engine.applyMove(state, from, to)) { undoStack.pop(); return false; }
+    const r = Engine.applyMove(state, from, to);
+    if (!r) { undoStack.pop(); return false; }
     startTimer();
     afterChange();
-    if (run) liftDuringMove(run.map(c => c.id));
+    if (finished) return true;
+    if (r.cleared >= 0) liftDuringMove(state.foundations[r.cleared].map(c => c.id), true);   // the whole run flies to its corner
+    else if (run) liftDuringMove(run.map(c => c.id));
     return true;
   }
 
@@ -651,7 +692,7 @@ if (typeof module !== 'undefined') module.exports = Engine;
     busy = true; render();
     const step = () => {
       const mv = Engine.autoStep(state);
-      if (!mv) { busy = false; afterChange(); return; }
+      if (!mv) { busy = false; render(); save(); return; }   // nothing more can go up
       render();
       const f = state.foundations[mv.to.i]; liftDuringMove([f[f.length - 1].id]);
       if (Engine.isWon(state)) { busy = false; afterChange(); return; }
